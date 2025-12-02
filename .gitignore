@@ -1,5 +1,7 @@
-# Ignore the data folder
-data/
+# Ignore the folder containing all CSV files
+data/raw_data/*
+!data/raw_data/DTB3.csv
+
 
 # Ignore Python cache files
 __pycache__/

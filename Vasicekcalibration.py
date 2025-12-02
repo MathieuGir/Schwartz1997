@@ -5,29 +5,12 @@ from datetime import date
 import time
 from scipy.optimize import minimize
 from typing import Optional, Union
-
+from data.import_functions.import_data import download_calibration_rates_data
 
 start_date = '2010-01-01'
 end_date = '2020-01-01'
 # end_date = date.today().strftime('%Y-%m-%d')
 
-
-
-def download_calibration_rates_data(rate_ticker = '^IRX', start_date = '2015-01-01', end_date = date.today().strftime('%Y-%m-%d')):
-    """
-    Download interest rates data from Yahoo Finance.
-
-    Args:
-        rate_ticker (str): Ticker symbol for the interest rate.
-        start_date (str): Start date for data download in 'YYYY-MM-DD' format.
-        end_date (str): End date for data download in 'YYYY-MM-DD' format.
-    Returns:
-        pd.DataFrame: DataFrame containing the interest rates data.
-    """
-    rates_data = yf.download(rate_ticker, start=start_date, end=end_date)['Close']
-    #rename the column name to r_t
-    rates_data.rename(columns={rate_ticker: 'r_t'}, inplace=True)
-    return rates_data
 
 def neg_log_likelihood_vasicek_euler(parameters: Optional[Union[np.ndarray, list]] = None,r_t: np.ndarray = None, r_t_plus_1: np.ndarray = None, delta_t: float = 1/252, verbosity: bool = False) -> float:
     """
@@ -53,7 +36,6 @@ def neg_log_likelihood_vasicek_euler(parameters: Optional[Union[np.ndarray, list
         print(f'Log-Likelihood computed: {- log_likelihood:,.2f}')
     return - log_likelihood
 
-
 def calibrate_vasicek(start_date: str = '2023-01-01', end_date: str = date.today().strftime('%Y-%m-%d'), calibration_rates: pd.DataFrame = None, verbosity: bool = False):
     """
     Calibrate the Vasicek model to interest rate data starting from a given date.
@@ -63,7 +45,7 @@ def calibrate_vasicek(start_date: str = '2023-01-01', end_date: str = date.today
     """
     # Download calibration rates data
     if calibration_rates is None:
-        print('No calibration rates given, downloading data from Yahoo Finance...')
+        print('No calibration rates given, downloading data from Yahoo Finance')
         calibration_rates = download_calibration_rates_data(start_date=start_date, end_date=end_date) / 100
 
     print('Dataframe length for calibration rates:', len(calibration_rates))
@@ -93,7 +75,7 @@ def calibrate_vasicek(start_date: str = '2023-01-01', end_date: str = date.today
     
     if result.success:
         a, m_star, sigma_3 = result.x
-        print("\n ---------------- Optimization Results ---------------- ")
+        print("\n ---------------- Optimization Results for Vasicek ---------------- ")
         print("\ndr_t+1 = a * (m* - r_t) * dt + sigma_3 * dW_t")
         print(f"Estimated a: {a:.6f}")
         print(f"Estimated m* (%): {m_star*100:.6f}")
@@ -108,4 +90,4 @@ def calibrate_vasicek(start_date: str = '2023-01-01', end_date: str = date.today
 # start_time = time.time()
 # calibrate_vasicek(start_date=start_date, end_date=end_date, verbosity=True)
 # end_time = time.time()
-# print(f"\nCalibration completed in {end_time - start_time:.2f} seconds.")
+# print(f"\nCalibration completed in {end_time - start_time:.2f} seconds.") 
