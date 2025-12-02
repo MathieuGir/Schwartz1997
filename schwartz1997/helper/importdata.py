@@ -112,11 +112,11 @@ def download_calibration_rates_data(rate_ticker = '^IRX', start_date = '2015-01-
     return rates_data
 
 
-def load_calibration_data(commo_ticker: str, rate_file_path: str = 'data/DTB3.csv', start_date='1980-01-01', end_date='2025-01-01'):
+def load_calibration_data(commodity_ticker: str, rate_file_path: str = 'data/DTB3.csv', start_date='1980-01-01', end_date='2025-01-01'):
     """
     Load commodity prices and short rate data for calibration.
     """
-    commodity_data = load_commodity_prices(f'data/{commo_ticker}.csv', start_date=start_date, end_date=end_date)
+    commodity_data = load_commodity_prices(f'data/{commodity_ticker}.csv', start_date=start_date, end_date=end_date)
     commodity_data['time_to_maturity'] = commodity_data.apply(lambda row: get_time_to_maturity(row.name, row['contract'], verbosity=False), axis=1)
     short_rate_data = load_short_rate_data(rate_file_path, start_date=start_date, end_date=end_date)
     

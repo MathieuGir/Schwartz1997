@@ -178,7 +178,8 @@ def negative_log_likelihood_schwartz3(params, log_futures, maturities, r_t, dt, 
 
 ##### VASICEK ESTIMATION TO GET SHORT RATE PARAMETERS
 
-def calibrate_schwartz3(commodity_ticker: str= None, calibration_start_date: str= None, vasicek_calibration_start_date:str= None, 
+def calibrate_schwartz3(commodity_ticker: str= None, calibration_start_date: str= None, 
+                        vasicek_calibration_start_date:str= None, 
                         calibration_end_date: str=date.today().strftime("%Y-%m-%d"), 
                         vasicek_estimates: tuple = None, verbosity = False, verbosity_cooldown = 10, save_results: bool = False):
     """
@@ -196,8 +197,7 @@ def calibrate_schwartz3(commodity_ticker: str= None, calibration_start_date: str
     
     a, m_star, sigma_3 = vasicek_estimates
 
-
-    commodity_calibration = load_calibration_data(commo_ticker=commodity_ticker, start_date=calibration_start_date, end_date=calibration_end_date)
+    commodity_calibration = load_calibration_data(commodity_ticker=commodity_ticker, start_date=calibration_start_date, end_date=calibration_end_date)
     vprint(f'Commodity calibration dataframe {commodity_ticker} successfully loaded: length:', len(commodity_calibration))
     commodity_calibration['log_futures'] = np.log(commodity_calibration['price'])
     
@@ -267,3 +267,6 @@ def calibrate_schwartz3(commodity_ticker: str= None, calibration_start_date: str
 
     print(f"\nMaximized Log-Likelihood: { -result.fun :.6f}")
     return result.x
+
+
+calibrate_schwartz3(commodity_ticker='KC', calibration_start_date='2025-01-01', calibration_end_date='2025-11-01')

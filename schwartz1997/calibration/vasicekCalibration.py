@@ -7,8 +7,8 @@ from scipy.optimize import minimize
 from typing import Optional, Union
 from schwartz1997.helper.importdata import download_calibration_rates_data
 
-start_date = '2010-01-01'
-end_date = '2020-01-01'
+start_date = '2024-06-01'
+end_date = '2025-11-13'
 # end_date = date.today().strftime('%Y-%m-%d')
 
 
@@ -60,7 +60,7 @@ def calibrate_vasicek(start_date: str = '2023-01-01', end_date: str = date.today
     initial_params = [np.float64(0.4), np.float64(r_t.mean()), np.float64(r_t.std())]   
     bounds = [
         (1e-6, None),   #bound for a
-        (-0.05, 0.5),   #bound for m* 
+        (-0.05, 0.15),   #bound for m* 
         (1e-6, None)    #bound for sigma_3
         ]
 
@@ -87,7 +87,7 @@ def calibrate_vasicek(start_date: str = '2023-01-01', end_date: str = date.today
         print((f"- Message: **{result.message}**"))
         return None
 
-# start_time = time.time()
-# calibrate_vasicek(start_date=start_date, end_date=end_date, verbosity=True)
-# end_time = time.time()
-# print(f"\nCalibration completed in {end_time - start_time:.2f} seconds.") 
+start_time = time.time()
+calibrate_vasicek(start_date=start_date, end_date=end_date, verbosity=False)
+end_time = time.time()
+print(f"\nCalibration completed in {end_time - start_time:.2f} seconds.") 
