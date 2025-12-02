@@ -89,9 +89,3 @@ This project relies on **market data that is not publicly shareable** due to con
 
 - Expected input files must be placed in the **`data/`** folder at the project root.
 - No real datasets are included in the repository.
-- If you are interested in obtaining access to the data for testing or research, **please contact us**.
-
-> 📂 **Summary**  
-> - Private datasets belong in `data/`  
-> - Data is *not* public  
-> - Contact us if you require access  
