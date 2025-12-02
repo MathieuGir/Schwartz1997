@@ -9,7 +9,18 @@ from schwartz1997.calibration.vasicekCalibration import calibrate_vasicek
 from schwartz1997.helper import load_short_rate_data, load_calibration_data, save_tmp_results
 
 
+_likelihood_counter = 0
 
+def reset_likelihood_counter():
+    """Reset the global likelihood evaluation counter."""
+    global _likelihood_counter
+    _likelihood_counter = 0
+
+def incr_likelihood_counter():
+    """Increment and return the global likelihood evaluation counter."""
+    global _likelihood_counter
+    _likelihood_counter += 1
+    return _likelihood_counter
 
 ##### Schwartz 3 
 
@@ -79,8 +90,10 @@ def negative_log_likelihood_schwartz3(params, log_futures, maturities, r_t, dt, 
     (kappa, alpha_hat, a, m_star,
      sigma_1, sigma_2, sigma_3,
      rho_12, rho_23) = params
+    
+    
     global likelihood_counter
-    likelihood_counter += 1
+    likelihood_counter = incr_likelihood_counter()
 
     # Transition components
     F = get_transition_matrix(kappa, a, dt)

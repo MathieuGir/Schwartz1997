@@ -5,7 +5,7 @@ from datetime import date
 import time
 from scipy.optimize import minimize
 from typing import Optional, Union
-from schwartz1997.helper.importData import download_calibration_rates_data
+from schwartz1997.helper.importdata import download_calibration_rates_data
 
 start_date = '2010-01-01'
 end_date = '2020-01-01'
