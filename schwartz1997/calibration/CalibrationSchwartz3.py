@@ -5,7 +5,7 @@ import time
 from datetime import date
 from scipy.optimize import minimize
 from pykalman import KalmanFilter
-from Vasicekcalibration import calibrate_vasicek
+from schwartz1997.calibration.Vasicekcalibration import calibrate_vasicek
 from data.import_functions.import_data import load_short_rate_data, load_calibration_data
 
 

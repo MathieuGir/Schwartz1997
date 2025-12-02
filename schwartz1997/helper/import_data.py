@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 from datetime import date
+import yfinance as yf
 
 
 def load_commodity_prices(file_path, date_col='date', measure_col='measure', measure_value='close', start_date=None, end_date=None):

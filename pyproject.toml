@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "schwartz1997"
+version = "0.1.0"
+description = "Calibration code for the Schwartz 3-factor (1997) commodity model, with Vasicek short-rate calibration and Kalman filtering."
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+license = { text = "MIT" }
+
+authors = [
+  { name = "Paul Hartmann", email = "paul.hartmann@edu.escp.eu" },
+  { name = "Mathieu Giraud", email = "mathieu.giraud@edu.escp.eu" }
+]
+
+dependencies = [
+  "numpy>=1.24",
+  "pandas>=2.0",
+  "yfinance>=0.2",
+  "scipy>=1.11",
+  "pykalman>=0.9.5",
+]
+
+[tool.uv]
+dev-dependencies = [
+  "ipykernel",
+  "matplotlib",
+  "pytest",
+]
