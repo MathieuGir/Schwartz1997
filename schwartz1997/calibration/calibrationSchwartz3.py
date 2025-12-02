@@ -5,8 +5,8 @@ import time
 from datetime import date
 from scipy.optimize import minimize
 from pykalman import KalmanFilter
-from schwartz1997.calibration.Vasicekcalibration import calibrate_vasicek
-from schwartz1997.helper.import_data import load_short_rate_data, load_calibration_data
+from schwartz1997.calibration.vasicekCalibration import calibrate_vasicek
+from schwartz1997.helper.importData import load_short_rate_data, load_calibration_data
 
 
 calibration_start_date = '2025-11-01'
