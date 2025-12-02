@@ -6,18 +6,10 @@ from datetime import date
 from scipy.optimize import minimize
 from pykalman import KalmanFilter
 from schwartz1997.calibration.vasicekCalibration import calibrate_vasicek
-from schwartz1997.helper.importData import load_short_rate_data, load_calibration_data
+from schwartz1997.helper import load_short_rate_data, load_calibration_data, save_tmp_results
 
 
-calibration_start_date = '2025-11-01'
-calibration_end_date = '2025-11-13'
 
-calibration_ticker = 'KC'  # Commodity ticker for calibration
-vasicek_calibration_start_date = '2022-04-01'
-
-
-likelihood_counter = 0
-verbosity_cooldown = 5
 
 ##### Schwartz 3 
 
@@ -173,7 +165,9 @@ def negative_log_likelihood_schwartz3(params, log_futures, maturities, r_t, dt, 
 
 ##### VASICEK ESTIMATION TO GET SHORT RATE PARAMETERS
 
-def calibrate_schwartz3(commodity_ticker: str= None, calibration_start_date: str= None, vasicek_calibration_start_date:str= None, calibration_end_date: str=date.today().strftime("%Y-%m-%d"), vasicek_estimates: tuple = None, verbosity = False, verbosity_cooldown = 10):
+def calibrate_schwartz3(commodity_ticker: str= None, calibration_start_date: str= None, vasicek_calibration_start_date:str= None, 
+                        calibration_end_date: str=date.today().strftime("%Y-%m-%d"), 
+                        vasicek_estimates: tuple = None, verbosity = False, verbosity_cooldown = 10, save_results: bool = False):
     """
     Calibrate the Schwartz 3-factor model to commodity futures prices and short rate data using MLE via Kalman filter.
     """
@@ -183,7 +177,7 @@ def calibrate_schwartz3(commodity_ticker: str= None, calibration_start_date: str
         vasicek_calibration_start_date = calibration_start_date
 
     if vasicek_estimates is None:
-        calibration_rates = load_short_rate_data('data/raw_data/DTB3.csv', start_date=vasicek_calibration_start_date, end_date=calibration_end_date)
+        calibration_rates = load_short_rate_data('data/DTB3.csv', start_date=vasicek_calibration_start_date, end_date=calibration_end_date)
         vasicek_estimates = calibrate_vasicek(calibration_rates= calibration_rates,verbosity=verbosity)
         vprint("\n =============== VASICEK ESTIMATION DONE, PARAMETERS PLUGGED TO SCHWARTZ MLE ===============")
     
@@ -246,9 +240,17 @@ def calibrate_schwartz3(commodity_ticker: str= None, calibration_start_date: str
     for name, value in zip(param_names, result.x):
         print(f"{name:12s} = {value: .6f}")
 
+    if save_results:
+        save_tmp_results(
+            commodity_ticker,
+            result.x,
+            result.fun,
+            vasicek_calibration_start_date,
+            calibration_start_date,
+            calibration_end_date,
+            
+
+        )
+
     print(f"\nMaximized Log-Likelihood: { -result.fun :.6f}")
     return result.x
-
-
-schwartz_3_estimation = calibrate_schwartz3(commodity_ticker=calibration_ticker, calibration_start_date=calibration_start_date, calibration_end_date=calibration_end_date, verbosity=False, verbosity_cooldown=10)
-print(schwartz_3_estimation)

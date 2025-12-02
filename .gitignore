@@ -1,5 +1,6 @@
 # Ignore the folder containing all CSV files
 data/*
+tmp/
 
 #uv file
 uv.lock
