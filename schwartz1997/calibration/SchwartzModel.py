@@ -38,18 +38,45 @@ def incr_likelihood_counter():
     return _likelihood_counter
 
 # SCHWARTZ MODEL FUNCTIONS
-def A_tau(a, tau):
-    return (1 - np.exp(-a * tau)) / a
 
-def B_tau(kappa, tau):
-    return (1 - np.exp(-kappa * tau)) / kappa
+def A_tau(a, tau, eps=1e-4):
+    tau = np.asarray(tau)
+    out = np.zeros_like(tau, dtype=float)
+    for i, t in enumerate(tau):
+        if abs(a) < eps:
+            out[i] = t  # first-order Taylor
+        else:
+            out[i] = (1 - np.exp(-a * t)) / a
+    return out
 
-def C_tau(kappa, alpha_hat, a, m_star, sigma_1, sigma_2, sigma_3, rho_1, tau):
-    term1 = 1/kappa**2 * (kappa * alpha_hat + sigma_1 * sigma_2 * rho_1) * (1 - np.exp(-kappa * tau) - kappa * tau)
-    term2 = sigma_2 /(4 * kappa**3) * (4 * (1 - np.exp(-kappa * tau)) - (1 - np.exp(-2 * kappa * tau)) - 2 * kappa * tau)
-    term3 = m_star / a * (1 - np.exp(-a * tau) - a * tau)
-    term4 = sigma_3**2 / (4 * a**3) * (4 * (1 - np.exp(-a * tau)) - (1 - np.exp(-2 * a * tau)) - 2 * a * tau)
+def B_tau(kappa, tau, eps=1e-4):
+    tau = np.asarray(tau)
+    out = np.zeros_like(tau, dtype=float)
+    for i, t in enumerate(tau):
+        if abs(kappa) < eps:
+            out[i] = t  # first-order Taylor
+        else:
+            out[i] = (1 - np.exp(-kappa * t)) / kappa
+    return out
+
+def C_tau(kappa, alpha_hat, a, m_star, sigma_1, sigma_2, sigma_3, rho_1, tau, eps=1e-4):
+    # Use first-order Taylor if kappa or a are too small
+    if abs(kappa) < eps:
+        term1 = -(alpha_hat + sigma_1*sigma_2*rho_1) * tau**2 / 2
+        term2 = -sigma_2 * tau**2 / 4
+    else:
+        term1 = 1/kappa**2 * (kappa * alpha_hat + sigma_1 * sigma_2 * rho_1) * (1 - np.exp(-kappa * tau) - kappa * tau)
+        term2 = sigma_2 /(4 * kappa**3) * (4 * (1 - np.exp(-kappa * tau)) - (1 - np.exp(-2 * kappa * tau)) - 2 * kappa * tau)
+    
+    if abs(a) < eps:
+        term3 = -m_star * tau**2 / 2
+        term4 = -sigma_3**2 * tau**2 / 4
+    else:
+        term3 = m_star / a * (1 - np.exp(-a * tau) - a * tau)
+        term4 = sigma_3**2 / (4 * a**3) * (4 * (1 - np.exp(-a * tau)) - (1 - np.exp(-2 * a * tau)) - 2 * a * tau)
+
     return term1 - term2 - term3 - term4
+
 
 def schwartz_3_futures_prices(A_tau, B_tau, C_tau, lnS_t, delta_t, r_t, tau):
     return lnS_t - delta_t * A_tau + r_t * B_tau + C_tau
@@ -81,60 +108,180 @@ def get_transition_covariance(sigma_1, sigma_2, sigma_3, rho_12, rho_23, dt):
     ])
     return Q
 
+
+def _ensure_positive_definite(mat, init_eps=1e-8, max_tries=12):
+    """
+    Ensure matrix is (numerically) positive definite by adding jitter to the diagonal.
+    Returns a copy of the matrix that is PD or raises a ValueError if unable.
+    """
+    M = np.array(mat, dtype=float).copy()
+    eps = init_eps
+    for i in range(max_tries):
+        try:
+            # Symmetrize to avoid numerical asymmetry
+            M_sym = (M + M.T) / 2.0
+            np.linalg.cholesky(M_sym)
+            return M_sym
+        except np.linalg.LinAlgError:
+            M = M + eps * np.eye(M.shape[0])
+            eps *= 10
+    raise ValueError("Unable to make matrix positive definite")
+
 def get_observation_matrix(kappa, a, maturities):
+    maturities = np.asarray(maturities).ravel()
     Z = np.column_stack([
-        np.ones(len(maturities)),  # 1
-        -A_tau(kappa, maturities),  # A_tau
-        B_tau(a, maturities)  # B_tau
+        np.ones(len(maturities)),
+        [-val for val in A_tau(kappa, maturities)],
+        [val for val in B_tau(a, maturities)]
     ])
+    print(f"Z_t shape: {Z.shape}\n{Z}\n")
     return Z
 
 def get_observation_offset(kappa, alpha_hat, a, m_star,
                            sigma_1, sigma_2, sigma_3, rho_12,
                            maturities):
+    maturities = np.asarray(maturities).ravel()
     d = np.array([
-        C_tau(kappa, alpha_hat, a, m_star,
-             sigma_1, sigma_2, sigma_3, rho_12,
-             tau) for tau in maturities
-    ])
+        C_tau(kappa, alpha_hat, a, m_star, sigma_1, sigma_2, sigma_3, rho_12, tau)
+        for tau in maturities
+    ]).reshape(-1, 1)
+    print(f"d_t shape: {d.shape}\n{d}\n")
     return d
 
-def build_schwartz_kalman_filter(params, log_futures, maturities, r_t, dt):
+def get_observation_covariance(sigma_1, sigma_2, sigma_3, rho_12, rho_23, dt, obs_dim=None):
+    """
+    Build a (possibly time-invariant) observation noise covariance matrix.
+    For simplicity we use a small diagonal covariance and allow the caller
+    to specify the observation dimension `obs_dim`.
+    """
+    if obs_dim is None:
+        # fallback to scalar noise if dimension unknown
+        return np.array([[0.01]])
+    base = 0.01
+    H = base * np.eye(obs_dim)
+    # ensure PD with adaptive jitter
+    H = _ensure_positive_definite(H)
+    return H
+
+def build_schwartz_kalman_filter(params, log_futures_list, maturities_list, r_t_list, dt):
     # Unpack params
-
     kappa, alpha_hat, a, m_star, sigma_1, sigma_2, sigma_3, rho_12, rho_23 = params
+    # print(f"Params: kappa={kappa}, alpha_hat={alpha_hat}, a={a}, m_star={m_star}, sigma_1={sigma_1}, sigma_2={sigma_2}, sigma_3={sigma_3}, rho_12={rho_12}, rho_23={rho_23}")
 
+    # Transition matrices
     F = get_transition_matrix(kappa, a, dt)
     c = get_transition_offset(alpha_hat, m_star, sigma_1, kappa, a, dt)
     Q = get_transition_covariance(sigma_1, sigma_2, sigma_3, rho_12, rho_23, dt)
+    # Ensure Q is positive definite (adaptive jitter)
+    try:
+        Q = _ensure_positive_definite(Q)
+    except ValueError:
+        # fallback: add large diagonal to keep optimizer from exploring this region
+        Q = Q + 1e-6 * np.eye(3)
 
-    y_list, Z_list, d_list = [], [], []
+    y_obs_list, Z_list, d_list = [], [], []
 
-    for i in range(len(log_futures)):
-        y_list.append([float(log_futures.iloc[i])])
-        tau = float(maturities.iloc[i])
+    # determine maximum number of contracts observed on any date
+    max_obs = max(len(np.asarray(t).ravel()) for t in maturities_list)
 
-        Z_list.append([[1, -A_tau(a, tau), B_tau(kappa, tau)]])
-        d_list.append([float(C_tau(kappa, alpha_hat, a, m_star, sigma_1, sigma_2, sigma_3, rho_12, tau))])
+    for i, (y_t, tau_t, r_t_t) in enumerate(zip(log_futures_list, maturities_list, r_t_list)):
+        # print(f"\n--- Date index {i} ---")
+        # print(f"Original y_t: {y_t}")
+        # print(f"Original tau_t: {tau_t}")
+        # print(f"Original r_t_t: {r_t_t}")
 
-    y_obs = np.array(y_list)
-    H = np.array([[0.01]])
+        # Ensure correct shapes
+        y_t = np.asarray(y_t).reshape(-1, 1)
+        tau_t = np.asarray(tau_t).ravel()
+        r_t_t = np.asarray(r_t_t).ravel()
 
-    x0 = np.array([float(log_futures.iloc[0]), 0.1, float(r_t.iloc[0])])
+        # print(f"Reshaped y_t: {y_t.shape}")
+        # print(f"Reshaped tau_t: {tau_t.shape}")
+        # print(f"Reshaped r_t_t: {r_t_t.shape}")
+
+        # Build padded observation vector (obs_dim = max_obs)
+        obs_dim = max_obs
+        y_pad = np.full((obs_dim, ), np.nan, dtype=float)
+        y_flat = np.asarray(y_t).ravel()
+        y_pad[: len(y_flat)] = y_flat
+        y_obs_list.append(y_pad)
+
+        # Observation matrix Z_t (obs_dim x state_dim). For missing observations
+        # we put zeros in the corresponding rows — the Kalman update will skip
+        # observation entries that are NaN in the observation vector.
+        Z_t = np.zeros((obs_dim, 3), dtype=float)
+        Z_t[: len(tau_t), 0] = 1.0
+        Z_t[: len(tau_t), 1] = -A_tau(kappa, tau_t)
+        Z_t[: len(tau_t), 2] = B_tau(a, tau_t)
+        Z_list.append(Z_t)
+
+        # Observation offset d_t (vector of length obs_dim)
+        d_t = np.zeros((obs_dim, ), dtype=float)
+        d_comp = np.array([
+            C_tau(kappa, alpha_hat, a, m_star,
+                  sigma_1, sigma_2, sigma_3, rho_12, tau)
+            for tau in tau_t
+        ]).ravel()
+        d_t[: len(d_comp)] = d_comp
+        d_list.append(d_t)
+
+        # print(f"d_t is of shape {d_t.shape} and values:\n{d_t}")
+        # print(f"Z_t is of shape {Z_t.shape} and values:\n{Z_t}")
+        # print(f"y_t appended: {y_t.shape}")
+
+    # Observation noise covariance (time-invariant, dimension = max_obs)
+    H = get_observation_covariance(sigma_1, sigma_2, sigma_3, rho_12, rho_23, dt, obs_dim=max_obs)
+    # ensure H is PD (should be already handled in get_observation_covariance)
+    try:
+        H = _ensure_positive_definite(H)
+    except ValueError:
+        H = H + 1e-6 * np.eye(H.shape[0])
+
+    # Initial state
+    # find a sensible initial lnS_t (first non-nan observation)
+    first_y = None
+    for v in y_obs_list:
+        v = np.asarray(v).ravel()
+        non_nans = v[~np.isnan(v)]
+        if non_nans.size > 0:
+            first_y = non_nans[0]
+            break
+    if first_y is None:
+        first_y = 0.0
+
+    # initial state: lnS_t (from first observation), convenience yield, short rate
+    x0 = np.array([first_y, 0.1, np.asarray(r_t_list[0]).ravel()[0]])
     P0 = np.diag([0.5, 1, 0.001])
+
+    # print("F shape:", F.shape)
+    # print("H shape:", H.shape)
+    # print("Q shape:", Q.shape)
+    # # print("R shape:", R.shape)
+    # print("x0 shape:", x0.shape)
+    # print("P0 shape:", P0.shape)
+
+
+    # Convert lists into arrays with the shapes pykalman expects:
+    # observation_matrices: (n_timesteps, obs_dim, state_dim)
+    # observation_offsets: (n_timesteps, obs_dim)
+    observation_matrices = np.stack(Z_list, axis=0)
+    observation_offsets = np.stack(d_list, axis=0)
 
     kf = KalmanFilter(
         transition_matrices=F,
         transition_offsets=c,
         transition_covariance=Q,
-        observation_matrices=Z_list,
-        observation_offsets=d_list,
+        observation_matrices=observation_matrices,
+        observation_offsets=observation_offsets,
         observation_covariance=H,
         initial_state_mean=x0,
         initial_state_covariance=P0
     )
 
+    # Stack observations into shape (n_timesteps, obs_dim) with NaNs for missing
+    y_obs = np.vstack(y_obs_list)
     return kf, y_obs
+
 
 def schwartz_loglik(params, log_futures, maturities, r_t, dt, verbosity=False, cooldown=10):
     global likelihood_counter
@@ -178,18 +325,29 @@ class SchwartzModel:
         self.vasicek_calibration_start_date = vasicek_calibration_start_date if vasicek_calibration_start_date is not None else calibration_start_date #allows for Vasicek calibration on longer period than Schwartz (more computational heavy)        
         self.dt = dt
 
-        self.data = load_calibration_data(commodity_ticker = self.commodity_ticker, 
-                                               start_date=self.calibration_start_date, 
-                                               end_date=self.calibration_end_date)
+        self.data = load_calibration_data(
+            commodity_ticker=self.commodity_ticker, 
+            start_date=self.calibration_start_date, 
+            end_date=self.calibration_end_date
+            )
         
-        self.log_futures = np.log(self.data['price'])
-        self.maturities = self.data['time_to_maturity']
-        self.r_t = self.data['r_t']
-        self.dates = self.data.index
+        self.data['log_price'] = np.log(self.data['price'])
+
+        # Group by date to handle multiple contracts per date
+        grouped = self.data.groupby(level=0)  # level=0 = 'date'
+
+        # Store as lists of arrays, one per date
+        self.log_futures_list = [group['log_price'].values.reshape(-1, 1) for _, group in grouped]
+        self.maturities_list = [group['time_to_maturity'].values for _, group in grouped]
+        self.r_t_list = [group['r_t'].values for _, group in grouped]
 
         # Placeholder for calibrated parameters
         self.calibrated_params = None
-
+        # print(f'self.data: \n {self.data.head()}')
+        # print(f'self.log_futures (type {type(self.log_futures_list)}): \n {self.log_futures_list[:5]}')
+        # print(f"self.maturities (type {type(self.maturities_list)}): \n {self.maturities_list[:5]}")
+        # print(f"self.r_t (type {type(self.r_t_list)}): \n {self.r_t_list[:5]}")
+        # print(f"self.dates (type {type(self.dates)}): \n {self.dates[:5]}")
 
     def vasicek_calibration(self, start_date:str = None, end_date:str = None, verbosity: bool = False):
         if start_date is None:
@@ -227,30 +385,35 @@ class SchwartzModel:
             ]
         
         bounds = [
-            (1e-6, None),  # kappa
-            (None, None),  # alpha_hat
+            (1e-6, 1e3),  # kappa
+            (-0.5, 1e3),  # alpha_hat
             (a, a),  # a
             (m_star, m_star),  # m_star
-            (1e-6, None),  # sigma_1
-            (1e-6, None),  # sigma_2
+            (1e-6, 5.0),  # sigma_1
+            (1e-6, 5.0),  # sigma_2
             (sigma_3, sigma_3),  # sigma_3
             (-0.9999, 0.9999),  # rho_12
             (0, 0)   # rho_23
             ]
         
         calibration_start_time = time.time()
-
+        
+        #set max iteration for optimizer
         result = minimize(
             fun=schwartz_loglik,
             x0=initial_params,
-            args=(self.log_futures, self.maturities, self.r_t, self.dt, verbosity, verbosity_cooldown),
+            args=(self.log_futures_list, self.maturities_list, self.r_t_list, self.dt, verbosity, verbosity_cooldown),
             bounds=bounds,
             method='L-BFGS-B'
         )
 
+
         calibration_end_time = time.time()
 
         print(f'\n Schwartz Model calibration completed in {calibration_end_time - calibration_start_time:,.2f} seconds.')
+        # print("Optimization result:", result)
+        # print("Number of iterations:", result.nit)
+        # print("Final parameters:", result.x)
 
 
         if save_results:
@@ -260,14 +423,12 @@ class SchwartzModel:
                 result.fun,
                 self.vasicek_calibration_start_date,
                 self.calibration_start_date,
-                self.calibration_end_date,
-                
-
+                self.calibration_end_date
             )
 
         
         print(f"\n========= Estimated Parameters for {self.commodity_ticker} =========")
-        print(f'Sample size: {len(self.log_futures)} observations, from {self.calibration_start_date} to {self.calibration_end_date}')
+        print(f'Sample size: {len(self.log_futures_list)} observations, from {self.calibration_start_date} to {self.calibration_end_date}')
 
         for section, entries in param_groups.items():
             print(f"{section:<25}{'Value':>25}")
@@ -281,6 +442,7 @@ class SchwartzModel:
         self.calibrated_params = result.x
         return result.x
 
+
     def get_latent_factors(self, verbosity: bool = False, verbosity_cooldown: int = 10, calibrated_params = None):
         if calibrated_params is None:
             if self.calibrated_params is None:
@@ -290,27 +452,46 @@ class SchwartzModel:
 
         kf, y_obs = build_schwartz_kalman_filter(
             calibrated_params,
-            self.log_futures,
-            self.maturities,
-            self.r_t,
+            self.log_futures_list,
+            self.maturities_list,
+            self.r_t_list,
             self.dt
         )
-
+        # Run the Kalman filter to get filtered state means
         state_means, state_covariances = kf.filter(y_obs)
+
+        # Build index (dates) matching the per-day observations
+        if hasattr(self, 'dates') and self.dates is not None:
+            dates = list(self.dates)
+        else:
+            try:
+                # extract unique dates from the first level of the MultiIndex (or Index)
+                dates = list(self.data.index.get_level_values(0).unique())
+            except Exception:
+                dates = None
+
+        # If dates length does not match number of time steps, fallback to integer index
+        n_steps = state_means.shape[0]
+        if dates is None or len(dates) != n_steps:
+            if dates is not None:
+                print(f"Warning: date index length ({len(dates)}) does not match Kalman time steps ({n_steps}); using integer index.")
+            dates = list(range(n_steps))
+
         latent_factors = pd.DataFrame(
             state_means,
-            index=self.dates,
+            index=dates,
             columns=['lnS_t', 'convenience_yield', 'short_rate']
         )
         # latent_factors = latent_factors.groupby(latent_factors.index)
         return latent_factors
 
+
 # Model = SchwartzModel(
 #     commodity_ticker='KC', 
-#     calibration_start_date='2025-11-04', 
+#     calibration_start_date='2025-11-02', 
 #     calibration_end_date='2025-11-13', 
 #     vasicek_calibration_start_date='2024-06-01'
 #     )
 
-# latent_factors = Model.get_latent_factors(verbosity=True, verbosity_cooldown=70)
+# latent_factors = Model.get_latent_factors(verbosity=True, verbosity_cooldown=10)
 # print(latent_factors)
