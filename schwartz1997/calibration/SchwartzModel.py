@@ -259,6 +259,20 @@ def build_schwartz_kalman_filter(params, log_futures_list, maturities_list, r_t_
     observation_matrices = np.stack(Z_list, axis=0)
     observation_offsets = np.stack(d_list, axis=0)
 
+    # Stack observations into shape (n_timesteps, obs_dim) with NaNs for missing
+    y_obs = np.vstack(y_obs_list)
+
+    # Remove time steps that have no observations at all (all NaN).
+    # These contribute nothing to the likelihood and can produce confusing
+    # predict-only rows at the end; drop them and keep an index mask to map
+    # back to original dates.
+    mask_keep = ~np.all(np.isnan(y_obs), axis=1)
+    if not np.all(mask_keep):
+        y_obs = y_obs[mask_keep]
+        observation_matrices = observation_matrices[mask_keep]
+        observation_offsets = observation_offsets[mask_keep]
+
+    # Now create the KalmanFilter using the possibly-reduced observation arrays
     kf = KalmanFilter(
         transition_matrices=F,
         transition_offsets=c,
@@ -270,9 +284,7 @@ def build_schwartz_kalman_filter(params, log_futures_list, maturities_list, r_t_
         initial_state_covariance=P0
     )
 
-    # Stack observations into shape (n_timesteps, obs_dim) with NaNs for missing
-    y_obs = np.vstack(y_obs_list)
-    return kf, y_obs
+    return kf, y_obs, mask_keep, observation_matrices, observation_offsets, Q, H
 
 
 def schwartz_loglik(params, log_futures, maturities, r_t, dt, verbosity=False, cooldown=10):
@@ -280,7 +292,8 @@ def schwartz_loglik(params, log_futures, maturities, r_t, dt, verbosity=False, c
     likelihood_counter = incr_likelihood_counter()
 
     try:
-        kf, y_obs = build_schwartz_kalman_filter(params, log_futures, maturities, r_t, dt)
+        # build filter (returns extra artifacts, ignore them here)
+        kf, y_obs, *_ = build_schwartz_kalman_filter(params, log_futures, maturities, r_t, dt)
         log_lik = kf.loglikelihood(y_obs)
 
         if verbosity and (likelihood_counter % cooldown == 0):
@@ -429,7 +442,7 @@ class SchwartzModel:
         print("-" * 50)
 
         self.calibrated_params = result.x
-        return result.x.tolist()
+        return result.x
 
 
     def get_latent_factors(self, verbosity: bool = False, verbosity_cooldown: int = 10, calibrated_params = None) -> pd.DataFrame:
@@ -439,37 +452,138 @@ class SchwartzModel:
     
             calibrated_params = self.calibrated_params
 
-        kf, y_obs = build_schwartz_kalman_filter(
+        kf, y_obs, mask_keep, obs_matrices, obs_offsets, Q, H = build_schwartz_kalman_filter(
             calibrated_params,
             self.log_futures_list,
             self.maturities_list,
             self.r_t_list,
             self.dt
         )
+
         # Run the Kalman filter to get filtered state means
         state_means, state_covariances = kf.filter(y_obs)
 
-        # Build index (dates) matching the per-day observations
-        if hasattr(self, 'dates') and self.dates is not None:
-            dates = list(self.dates)
-        else:
-            try:
-                # extract unique dates from the first level of the MultiIndex (or Index)
-                dates = list(self.data.index.get_level_values(0).unique())
-            except Exception:
-                dates = None
+        # If the filter produced NaNs, try rebuilding the filter with larger
+        # observation noise and small jitter on Q a few times.
+        if np.isnan(state_means).any():
+            tried = 0
+            H_scale = 10.0
+            q_jitter = 1e-8
+            while tried < 4 and np.isnan(state_means).any():
+                tried += 1
+                try:
+                    H_try = H * H_scale
+                    Q_try = Q + q_jitter * np.eye(Q.shape[0])
+                    kf_try = KalmanFilter(
+                        transition_matrices=kf.transition_matrices,
+                        transition_offsets=kf.transition_offsets,
+                        transition_covariance=_ensure_positive_definite(Q_try),
+                        observation_matrices=obs_matrices,
+                        observation_offsets=obs_offsets,
+                        observation_covariance=_ensure_positive_definite(H_try),
+                        initial_state_mean=kf.initial_state_mean,
+                        initial_state_covariance=kf.initial_state_covariance
+                    )
+                    state_means, state_covariances = kf_try.filter(y_obs)
+                    if not np.isnan(state_means).any():
+                        kf = kf_try
+                        break
+                except Exception:
+                    # increase scales and retry
+                    H_scale *= 10.0
+                    q_jitter *= 100.0
+                    continue
 
-        # If dates length does not match number of time steps, fallback to integer index
-        n_steps = state_means.shape[0]
-        if dates is None or len(dates) != n_steps:
-            if dates is not None:
-                print(f"Warning: date index length ({len(dates)}) does not match Kalman time steps ({n_steps}); using integer index.")
-            dates = list(range(n_steps))
+        # Build index (dates) matching the original per-day observations
+        try:
+            orig_dates = list(self.data.index.get_level_values(0).unique())
+        except Exception:
+            orig_dates = None
+
+        # If we removed empty days, apply mask to the original dates
+        if orig_dates is None:
+            dates = list(range(state_means.shape[0]))
+        else:
+            if mask_keep is None:
+                dates = orig_dates
+            else:
+                dates = [d for d, keep in zip(orig_dates, mask_keep) if keep]
+
+        # If lengths still mismatch, fallback to integer index with warning
+        if len(dates) != state_means.shape[0]:
+            print(f"Warning: date index length ({len(dates)}) does not match Kalman output ({state_means.shape[0]}); using integer index.")
+            dates = list(range(state_means.shape[0]))
 
         latent_factors = pd.DataFrame(
             state_means,
             index=dates,
             columns=['lnS_t', 'convenience_yield', 'short_rate']
         )
-        # latent_factors = latent_factors.groupby(latent_factors.index)
+        # If filtered states contain NaNs (numerical issues), forward-fill them
+        # by propagating the last valid state through the transition: x_{t+1}=F x_t + c
+        if np.isnan(state_means).any():
+            sm = state_means.copy()
+            n_steps = sm.shape[0]
+            # compute transition matrices from calibrated params
+            try:
+                kappa = float(calibrated_params[0])
+                alpha_hat = float(calibrated_params[1])
+                a = float(calibrated_params[2])
+                m_star = float(calibrated_params[3])
+                sigma_1 = float(calibrated_params[4])
+            except Exception:
+                kappa = a = alpha_hat = m_star = sigma_1 = None
+
+            if kappa is not None:
+                F = get_transition_matrix(kappa, a, self.dt)
+                c = get_transition_offset(alpha_hat, m_star, sigma_1, kappa, a, self.dt)
+                # find first valid row
+                valid_idx = np.where(~np.isnan(sm).any(axis=1))[0]
+                if valid_idx.size > 0:
+                    fv = valid_idx[0]
+                    # forward propagate from fv
+                    for t in range(fv + 1, n_steps):
+                        if np.isnan(sm[t]).any():
+                            sm[t] = F.dot(sm[t - 1]) + c
+                    # backward-fill any leading NaNs with first valid
+                    for t in range(fv - 1, -1, -1):
+                        if np.isnan(sm[t]).any():
+                            sm[t] = sm[t + 1]
+                    state_means = sm
+                    latent_factors = pd.DataFrame(
+                        state_means,
+                        index=dates,
+                        columns=['lnS_t', 'convenience_yield', 'short_rate']
+                    )
+
         return latent_factors
+
+
+
+
+# Model = SchwartzModel(
+#     commodity_ticker='KC', 
+#     calibration_start_date='2023-01-01', 
+#     calibration_end_date='2023-11-13', 
+#     vasicek_calibration_start_date='2022-06-01'
+#     )
+
+# latent_factors = Model.get_latent_factors(verbosity=True, verbosity_cooldown=5)
+
+# # Detect the number of NaNs
+# num_nans = latent_factors.isna().sum().sum()
+# print(f"Number of NaNs in latent factors: {num_nans}")
+# print(f'Latent factors head:\n{latent_factors.head()}')
+# print(f'Latent factors tail:\n{latent_factors.tail()}')
+
+# # If there are nans detect the first row where there are NaNs and plot the 5 rows before and 5 rows after
+# if num_nans > 0:
+#     # find first row position that contains any NaN (positional index)
+#     nan_positions = np.flatnonzero(latent_factors.isna().any(axis=1))
+#     if nan_positions.size > 0:
+#         pos = int(nan_positions[0])
+#         start = max(0, pos - 5)
+#         end = min(len(latent_factors), pos + 6)
+#         print(latent_factors.iloc[start:end])
+#     else:
+#         print('No NaN rows found (unexpected)')
