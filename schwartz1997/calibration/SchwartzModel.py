@@ -181,8 +181,11 @@ def build_schwartz_kalman_filter(params, log_futures_list, maturities_list, r_t_
 
     y_obs_list, Z_list, d_list = [], [], []
 
-    # determine maximum number of contracts observed on any date
-    max_obs = max(len(np.asarray(t).ravel()) for t in maturities_list)
+    # determine minimum number of contracts observed on any date
+    # using the minimum avoids creating trailing all-NaN columns by
+    # restricting the observation vector to a fixed set of maturities
+    # that exist on every date (simpler and numerically more stable).
+    min_obs = min(len(np.asarray(t).ravel()) for t in maturities_list)
 
     for i, (y_t, tau_t, r_t_t) in enumerate(zip(log_futures_list, maturities_list, r_t_list)):
         # print(f"\n--- Date index {i} ---")
@@ -199,38 +202,38 @@ def build_schwartz_kalman_filter(params, log_futures_list, maturities_list, r_t_
         # print(f"Reshaped tau_t: {tau_t.shape}")
         # print(f"Reshaped r_t_t: {r_t_t.shape}")
 
-        # Build padded observation vector (obs_dim = max_obs)
-        obs_dim = max_obs
-        y_pad = np.full((obs_dim, ), np.nan, dtype=float)
+        # Use only the first `min_obs` contracts for each date so that every
+        # observation row has the same length and contains no NaNs.
+        obs_dim = min_obs
         y_flat = np.asarray(y_t).ravel()
-        y_pad[: len(y_flat)] = y_flat
-        y_obs_list.append(y_pad)
+        # take the first min_obs entries (every date has at least min_obs by construction)
+        y_sel = y_flat[:obs_dim].astype(float)
+        y_obs_list.append(y_sel)
 
-        # Observation matrix Z_t (obs_dim x state_dim). For missing observations
-        # we put zeros in the corresponding rows — the Kalman update will skip
-        # observation entries that are NaN in the observation vector.
+        # Observation matrix Z_t (obs_dim x state_dim) built from the
+        # corresponding selected maturities
+        tau_sel = tau_t[:obs_dim]
         Z_t = np.zeros((obs_dim, 3), dtype=float)
-        Z_t[: len(tau_t), 0] = 1.0
-        Z_t[: len(tau_t), 1] = -A_tau(kappa, tau_t)
-        Z_t[: len(tau_t), 2] = B_tau(a, tau_t)
+        Z_t[:, 0] = 1.0
+        Z_t[:, 1] = -A_tau(kappa, tau_sel)
+        Z_t[:, 2] = B_tau(a, tau_sel)
         Z_list.append(Z_t)
 
         # Observation offset d_t (vector of length obs_dim)
-        d_t = np.zeros((obs_dim, ), dtype=float)
         d_comp = np.array([
             C_tau(kappa, alpha_hat, a, m_star,
                   sigma_1, sigma_2, sigma_3, rho_12, tau)
-            for tau in tau_t
+            for tau in tau_sel
         ]).ravel()
-        d_t[: len(d_comp)] = d_comp
+        d_t = d_comp.astype(float)
         d_list.append(d_t)
 
         # print(f"d_t is of shape {d_t.shape} and values:\n{d_t}")
         # print(f"Z_t is of shape {Z_t.shape} and values:\n{Z_t}")
         # print(f"y_t appended: {y_t.shape}")
 
-    # Observation noise covariance (time-invariant, dimension = max_obs)
-    H = get_observation_covariance(sigma_1, sigma_2, sigma_3, rho_12, rho_23, dt, obs_dim=max_obs)
+    # Observation noise covariance (time-invariant, dimension = min_obs)
+    H = get_observation_covariance(sigma_1, sigma_2, sigma_3, rho_12, rho_23, dt, obs_dim=min_obs)
     # ensure H is PD (should be already handled in get_observation_covariance)
     try:
         H = _ensure_positive_definite(H)
@@ -335,8 +338,15 @@ class SchwartzModel:
             start_date=self.calibration_start_date, 
             end_date=self.calibration_end_date
             )
+
+        #sort so the time to maturity is always superior to 5 (liquidity issue)
+        self.data = self.data[self.data['time_to_maturity'] >= 5]
         
         self.data['log_price'] = np.log(self.data['price'])
+        
+        print(f"Number of NaNs in log_price: {self.data['log_price'].isna().sum()}")
+        print(f"Number of NaNs in time_to_maturity: {self.data['time_to_maturity'].isna().sum()}")
+        print(f"Number of NaNs in r_t: {self.data['r_t'].isna().sum()}")
 
         # Group by date to handle multiple contracts per date
         grouped = self.data.groupby(level=0)  # level=0 = 'date'
@@ -459,131 +469,13 @@ class SchwartzModel:
             self.r_t_list,
             self.dt
         )
-
         # Run the Kalman filter to get filtered state means
-        state_means, state_covariances = kf.filter(y_obs)
-
-        # If the filter produced NaNs, try rebuilding the filter with larger
-        # observation noise and small jitter on Q a few times.
-        if np.isnan(state_means).any():
-            tried = 0
-            H_scale = 10.0
-            q_jitter = 1e-8
-            while tried < 4 and np.isnan(state_means).any():
-                tried += 1
-                try:
-                    H_try = H * H_scale
-                    Q_try = Q + q_jitter * np.eye(Q.shape[0])
-                    kf_try = KalmanFilter(
-                        transition_matrices=kf.transition_matrices,
-                        transition_offsets=kf.transition_offsets,
-                        transition_covariance=_ensure_positive_definite(Q_try),
-                        observation_matrices=obs_matrices,
-                        observation_offsets=obs_offsets,
-                        observation_covariance=_ensure_positive_definite(H_try),
-                        initial_state_mean=kf.initial_state_mean,
-                        initial_state_covariance=kf.initial_state_covariance
-                    )
-                    state_means, state_covariances = kf_try.filter(y_obs)
-                    if not np.isnan(state_means).any():
-                        kf = kf_try
-                        break
-                except Exception:
-                    # increase scales and retry
-                    H_scale *= 10.0
-                    q_jitter *= 100.0
-                    continue
-
-        # Build index (dates) matching the original per-day observations
-        try:
-            orig_dates = list(self.data.index.get_level_values(0).unique())
-        except Exception:
-            orig_dates = None
-
-        # If we removed empty days, apply mask to the original dates
-        if orig_dates is None:
-            dates = list(range(state_means.shape[0]))
-        else:
-            if mask_keep is None:
-                dates = orig_dates
-            else:
-                dates = [d for d, keep in zip(orig_dates, mask_keep) if keep]
-
-        # If lengths still mismatch, fallback to integer index with warning
-        if len(dates) != state_means.shape[0]:
-            print(f"Warning: date index length ({len(dates)}) does not match Kalman output ({state_means.shape[0]}); using integer index.")
-            dates = list(range(state_means.shape[0]))
+        state_means, state_covariances = kf.smooth(y_obs)
 
         latent_factors = pd.DataFrame(
             state_means,
-            index=dates,
+            index=self.data.index.unique()[mask_keep],
             columns=['lnS_t', 'convenience_yield', 'short_rate']
         )
-        # If filtered states contain NaNs (numerical issues), forward-fill them
-        # by propagating the last valid state through the transition: x_{t+1}=F x_t + c
-        if np.isnan(state_means).any():
-            sm = state_means.copy()
-            n_steps = sm.shape[0]
-            # compute transition matrices from calibrated params
-            try:
-                kappa = float(calibrated_params[0])
-                alpha_hat = float(calibrated_params[1])
-                a = float(calibrated_params[2])
-                m_star = float(calibrated_params[3])
-                sigma_1 = float(calibrated_params[4])
-            except Exception:
-                kappa = a = alpha_hat = m_star = sigma_1 = None
-
-            if kappa is not None:
-                F = get_transition_matrix(kappa, a, self.dt)
-                c = get_transition_offset(alpha_hat, m_star, sigma_1, kappa, a, self.dt)
-                # find first valid row
-                valid_idx = np.where(~np.isnan(sm).any(axis=1))[0]
-                if valid_idx.size > 0:
-                    fv = valid_idx[0]
-                    # forward propagate from fv
-                    for t in range(fv + 1, n_steps):
-                        if np.isnan(sm[t]).any():
-                            sm[t] = F.dot(sm[t - 1]) + c
-                    # backward-fill any leading NaNs with first valid
-                    for t in range(fv - 1, -1, -1):
-                        if np.isnan(sm[t]).any():
-                            sm[t] = sm[t + 1]
-                    state_means = sm
-                    latent_factors = pd.DataFrame(
-                        state_means,
-                        index=dates,
-                        columns=['lnS_t', 'convenience_yield', 'short_rate']
-                    )
-
         return latent_factors
-
-
-
-
-# Model = SchwartzModel(
-#     commodity_ticker='KC', 
-#     calibration_start_date='2023-01-01', 
-#     calibration_end_date='2023-11-13', 
-#     vasicek_calibration_start_date='2022-06-01'
-#     )
-
-# latent_factors = Model.get_latent_factors(verbosity=True, verbosity_cooldown=5)
-
-# # Detect the number of NaNs
-# num_nans = latent_factors.isna().sum().sum()
-# print(f"Number of NaNs in latent factors: {num_nans}")
-# print(f'Latent factors head:\n{latent_factors.head()}')
-# print(f'Latent factors tail:\n{latent_factors.tail()}')
-
-# # If there are nans detect the first row where there are NaNs and plot the 5 rows before and 5 rows after
-# if num_nans > 0:
-#     # find first row position that contains any NaN (positional index)
-#     nan_positions = np.flatnonzero(latent_factors.isna().any(axis=1))
-#     if nan_positions.size > 0:
-#         pos = int(nan_positions[0])
-#         start = max(0, pos - 5)
-#         end = min(len(latent_factors), pos + 6)
-#         print(latent_factors.iloc[start:end])
-#     else:
-#         print('No NaN rows found (unexpected)')
+    
