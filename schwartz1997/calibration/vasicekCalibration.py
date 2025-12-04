@@ -7,9 +7,6 @@ from scipy.optimize import minimize
 from typing import Optional, Union
 from schwartz1997.helper.importdata import download_calibration_rates_data
 
-start_date = '2024-06-01'
-end_date = '2025-11-13'
-# end_date = date.today().strftime('%Y-%m-%d')
 
 
 def neg_log_likelihood_vasicek_euler(parameters: Optional[Union[np.ndarray, list]] = None,r_t: np.ndarray = None, r_t_plus_1: np.ndarray = None, delta_t: float = 1/252, verbosity: bool = False) -> float:
@@ -86,8 +83,3 @@ def calibrate_vasicek(start_date: str = '2023-01-01', end_date: str = date.today
         print(("### Calibration Failed"))
         print((f"- Message: **{result.message}**"))
         return None
-
-start_time = time.time()
-calibrate_vasicek(start_date=start_date, end_date=end_date, verbosity=False)
-end_time = time.time()
-print(f"\nCalibration completed in {end_time - start_time:.2f} seconds.") 

@@ -253,14 +253,6 @@ def build_schwartz_kalman_filter(params, log_futures_list, maturities_list, r_t_
     x0 = np.array([first_y, 0.1, np.asarray(r_t_list[0]).ravel()[0]])
     P0 = np.diag([0.5, 1, 0.001])
 
-    # print("F shape:", F.shape)
-    # print("H shape:", H.shape)
-    # print("Q shape:", Q.shape)
-    # # print("R shape:", R.shape)
-    # print("x0 shape:", x0.shape)
-    # print("P0 shape:", P0.shape)
-
-
     # Convert lists into arrays with the shapes pykalman expects:
     # observation_matrices: (n_timesteps, obs_dim, state_dim)
     # observation_offsets: (n_timesteps, obs_dim)
@@ -342,12 +334,9 @@ class SchwartzModel:
         self.r_t_list = [group['r_t'].values for _, group in grouped]
 
         # Placeholder for calibrated parameters
-        self.calibrated_params = None
-        # print(f'self.data: \n {self.data.head()}')
-        # print(f'self.log_futures (type {type(self.log_futures_list)}): \n {self.log_futures_list[:5]}')
-        # print(f"self.maturities (type {type(self.maturities_list)}): \n {self.maturities_list[:5]}")
-        # print(f"self.r_t (type {type(self.r_t_list)}): \n {self.r_t_list[:5]}")
-        # print(f"self.dates (type {type(self.dates)}): \n {self.dates[:5]}")
+        self.calibrated_params: list = None
+
+        print("SchwartzModel initialized.")
 
     def vasicek_calibration(self, start_date:str = None, end_date:str = None, verbosity: bool = False):
         if start_date is None:
@@ -363,9 +352,9 @@ class SchwartzModel:
         )
         self.vasicek_params = vasicek_params
         return vasicek_params
-
     
-    def calibrate_schwartz(self, verbosity: bool = False, verbosity_cooldown: int = 10, save_results: bool = False):
+    def calibrate_schwartz(self, verbosity: bool = False, verbosity_cooldown: int = 10, 
+                           save_results: bool = False) -> list:
 
         if not hasattr(self, 'vasicek_params'):
             self.vasicek_calibration(verbosity=verbosity)
@@ -440,10 +429,10 @@ class SchwartzModel:
         print("-" * 50)
 
         self.calibrated_params = result.x
-        return result.x
+        return result.x.tolist()
 
 
-    def get_latent_factors(self, verbosity: bool = False, verbosity_cooldown: int = 10, calibrated_params = None):
+    def get_latent_factors(self, verbosity: bool = False, verbosity_cooldown: int = 10, calibrated_params = None) -> pd.DataFrame:
         if calibrated_params is None:
             if self.calibrated_params is None:
                 self.calibrated_params = self.calibrate_schwartz(verbosity=verbosity, verbosity_cooldown=verbosity_cooldown)
@@ -484,14 +473,3 @@ class SchwartzModel:
         )
         # latent_factors = latent_factors.groupby(latent_factors.index)
         return latent_factors
-
-
-# Model = SchwartzModel(
-#     commodity_ticker='KC', 
-#     calibration_start_date='2025-11-02', 
-#     calibration_end_date='2025-11-13', 
-#     vasicek_calibration_start_date='2024-06-01'
-#     )
-
-# latent_factors = Model.get_latent_factors(verbosity=True, verbosity_cooldown=10)
-# print(latent_factors)

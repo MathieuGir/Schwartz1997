@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 from datetime import date
 import yfinance as yf
+import os
 
 
 def load_commodity_prices(file_path, date_col='date', measure_col='measure', measure_value='close', start_date=None, end_date=None):
@@ -83,8 +84,16 @@ def load_short_rate_data(file_path: str = 'data/DTB3.csv', start_date:str = '198
     """
     Returns the DTB3 short rate data (source: FRED) between a given start and end date.
     The rate is converted from percentage to decimal and renamed to 'r_t'.
+
+
     """
+
+    print(f"Loading short rate data from {file_path} between {start_date} and {end_date}... and pwd = {os.getcwd()}")
+    
+
     short_rate = pd.read_csv(file_path, sep=',') 
+    print(f"Short rate data loaded, total rows: {len(short_rate)}")
+    
     short_rate['observation_date'] = pd.to_datetime(short_rate['observation_date'], format='%Y-%m-%d')
     short_rate = short_rate.set_index('observation_date').sort_index()
     short_rate = short_rate.loc[start_date:end_date]
@@ -92,6 +101,11 @@ def load_short_rate_data(file_path: str = 'data/DTB3.csv', start_date:str = '198
     short_rate = short_rate.rename(columns={'DTB3': 'r_t'})
     short_rate.index.name = 'date'
     short_rate.dropna(inplace=True)
+
+    if short_rate.empty:
+        raise ValueError(f"No short rate data available between {start_date} and {end_date} after filtering.")
+    
+    
     return short_rate
 
 
