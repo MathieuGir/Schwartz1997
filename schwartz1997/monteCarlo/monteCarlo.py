@@ -141,10 +141,78 @@ def plot_last_state_distribution(states: np.ndarray):
     plt.savefig("sim_last_state_distributions.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
 
+def future_prices(params, time_to_maturity, S_t, delta_t, r_t):
+    kappa, alpha_hat, a, m_star, sigma_1, sigma_2, sigma_3, rho_12, rho_23 = params
+    # The theoretical formula gives log-futures: ln F_t(T) = ln S_t - delta * A_tau + r_t * B_tau + C_tau
+    # Ensure we compute lnF and return the futures price F = exp(lnF).
+    lnS_t = S_t  # here S_t is expected to be ln(S) (see callers)
+    A_tau = (1 - np.exp(-kappa * time_to_maturity)) / kappa
+    B_tau = (1.0 - np.exp(-a * time_to_maturity)) / a
+    C_tau = (
+        (kappa * alpha_hat + sigma_1 * sigma_2 * rho_12)
+        * (1 - np.exp(-kappa * time_to_maturity) - kappa * time_to_maturity)
+        / kappa**2
+        - (sigma_2**2 / (4 * kappa**3))
+        * (4 * (1 - np.exp(-kappa * time_to_maturity)) - (1 - np.exp(-2 * kappa * time_to_maturity)) - 2 * kappa * time_to_maturity)
+        - (m_star / a) * (1 - np.exp(-a * time_to_maturity) - a * time_to_maturity)
+        - (sigma_3**2 / (4 * a**3))
+        * (4 * (1 - np.exp(-a * time_to_maturity)) - (1 - np.exp(-2 * a * time_to_maturity)) - 2 * a * time_to_maturity)
+    )
+
+    lnF = lnS_t - delta_t * A_tau + r_t * B_tau + C_tau
+    return float(np.exp(lnF))
+
+
+tenor_to_business_days = {
+    "1m": 21,
+    "2m": 42,
+    "3m": 63,
+    "6m": 126,
+    "9m": 189,
+    "12m": 252,
+    "15m": 315,
+    "18m": 378,
+    "24m": 504
+}
+
+def monte_carlo_simulation_schwartz3_prices(
+    states: np.ndarray,
+    calibrated_params: list,
+    t_idx: int = -1,
+) -> dict:
+    """
+    For each simulated path, compute a dictionary of futures prices across
+    the predefined tenors in `tenor_to_business_days` using the provided
+    `future_prices` helper.
+    We start from the last time step by default (t_idx = -1). 
+    Returns a list of results where each element is
+    a dict: {'path': <int>, 'prices': {<tenor>: <price>, ...}}.
+    """
+
+    results = {}
+
+    for path_idx, state in enumerate(states):
+        lnS_t = float(state[t_idx, 0])
+        delta_t = float(state[t_idx, 1])
+        r_t = float(state[t_idx, 2])
+
+        futures_prices = {}
+        for tenor, days in tenor_to_business_days.items():
+            time_to_maturity = days / 252
+            # pass lnS_t (log-spot) to future_prices which returns F = exp(lnF)
+            F_t_T = future_prices(calibrated_params, time_to_maturity, lnS_t, delta_t, r_t)
+            futures_prices[tenor] = float(F_t_T)
+
+        # store prices dict keyed by path index
+        results[path_idx] = futures_prices
+
+    return results
+
+
 def main():
     # Example usage
-    commodity_ticker = "KC"  # Crude Oil
-    calibration_start_date = "2025-10-01"
+    commodity_ticker = "KC"  # Coffee Futures
+    calibration_start_date = "2025-11-01"
     calibration_end_date = "2025-11-13"
 
 
@@ -162,7 +230,7 @@ def main():
     calibration_results = calibrate_schwartz3(
         shwartz_model,
         verbosity=True,
-        verbosity_cooldown=10,
+        verbosity_cooldown=5,
         save_results=False
     )
 
@@ -173,59 +241,26 @@ def main():
     states = monte_carlo_simulation_schwartz3_states(
         calibrated_params,
         latent_factors,
-        num_simulations=10000,
-        num_steps=252,
+        num_simulations=100,
+        num_steps=25,
         delta_t=1/252
     )
 
     print("Simulated latent states shape:", states.shape)
-    print("Statesgt Parameters:", states)
+    print("Calibrated Parameters:", states)
 
     print("printing latent factor distribution summary...")
     plot_last_state_distribution(states)
 
+    future_prices = monte_carlo_simulation_schwartz3_prices(
+        states= states,
+        calibrated_params= calibrated_params,
+        )
+    
+    print("Sample futures prices for first 5 paths:")
+    for path_idx in range(5):
+        print(f"Path {path_idx}: {future_prices[path_idx]}")
+
 
 if __name__ == "__main__":
     main()
-
-
-
-# def monte_carlo_simulation_schwartz3_prices(
-#     states: np.ndarray,
-
-#     kappa: float,
-#     a: float,
-#     T_maturity: float,
-#     t_idx: int = -1,
-# ) -> np.ndarray:
-#     """
-#     Compute futures prices F_t(T) from simulated latent states.
-
-#     states: array of shape (num_sim, num_steps+1, 3)
-#         [:, :, 0] = ln S_t
-#         [:, :, 1] = δ_t (convenience yield)
-#         [:, :, 2] = r_t (short rate)
-
-#     T_maturity: time-to-maturity T (in years, or same time units as kappa, a)
-#     t_idx: which time index to use as 't' (default: last time step)
-
-#     Returns:
-#         F: array of shape (num_sim,) – one futures price per path
-#     """
-#     lnS   = states[:, t_idx, 0]
-#     delta = states[:, t_idx, 1]
-#     r     = states[:, t_idx, 2]
-
-#     A_delta = (1.0 - np.exp(-kappa * T_maturity)) / kappa
-#     A_r     = (1.0 - np.exp(-a * T_maturity)) / a
-#     C_T     = C_tau(kappa, alpha_hat=0.0, a=a, m_star=0.0,
-#                       sigma_1=sigma_1, sigma_2=sigma_2, sigma_3=sigma_3,
-#                       rho_1=rho_12, tau=T_maturity)
-
-#     lnF = lnS - delta * A_delta + r * A_r + C_T
-#     F   = np.exp(lnF)
-
-#     return F
-
-
-
