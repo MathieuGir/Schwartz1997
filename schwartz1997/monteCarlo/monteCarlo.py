@@ -179,7 +179,7 @@ def main():
     )
 
     print("Simulated latent states shape:", states.shape)
-    print("Calibrated Parameters:", states)
+    print("Statesgt Parameters:", states)
 
     print("printing latent factor distribution summary...")
     plot_last_state_distribution(states)
