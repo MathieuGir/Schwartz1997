@@ -23,29 +23,33 @@ pip install uv
 From the root of the project (where `pyproject.toml` is located):
 
 ```bash
-uv sync
 ```
-
-This will:
-
-- Create a `.venv` virtual environment  
-- Install all required dependencies into it  
-
-Activate the virtual environment:
-
-```bash
-source .venv/bin/activate
+.
+├── data/                         # Private market data (CSV files, not included)
+│
+├── schwartz1997/                 # Main Python package
+│   ├── __init__.py
+│   ├── dashboard.py              # Streamlit dashboard / demo UI
+│   ├── calibration/              # Core calibration logic
+│   │   ├── __init__.py
+│   │   ├── calibrationSchwartz3.py
+│   │   ├── SchwartzModel.py
+│   │   └── vasicekCalibration.py
+│   ├── helper/                   # Utility and data-loading functions
+│   │   ├── __init__.py
+│   │   ├── importdata.py
+│   │   └── savetmp.py
+│   └── monteCarlo/               # Monte Carlo simulation utilities
+│       └── monteCarlo.py
+│
+├── notebooks/                     # Analysis notebooks (presentation, examples)
+│   └── Model presentation.ipynb
+|
+├── README.md                     # Documentation (this file)
+├── pyproject.toml                # Project config (UV + hatchling)
+├── uv.lock                       # UV lockfile
+└── .venv/                        # Virtual environment (created by uv sync)
 ```
-
-Windows (PowerShell):
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-```
-
----
-
-## Project Architecture 
 
 The project is structured as follows:
 
